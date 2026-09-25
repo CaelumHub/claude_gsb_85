@@ -77,10 +77,12 @@
     commonFriends: (source, target) =>
       request("GET", "/api/common-friends" + qs({ source, target })),
 
-    // 社群 / PageRank
+    // 社群 / PageRank / 影响力
     community: () => request("GET", "/api/community"),
     computeCommunity: (resolution) => request("POST", "/api/community/compute", { resolution }),
     pagerank: (p) => request("GET", "/api/pagerank" + qs(p)),
+    influence: (p) => request("GET", "/api/influence" + qs(p)),
+    computeInfluence: (b) => request("POST", "/api/influence/compute", b),
 
     // 推荐
     recommend: (id, p) => request("GET", "/api/recommend/" + id + qs(p)),

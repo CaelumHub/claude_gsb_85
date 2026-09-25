@@ -79,6 +79,13 @@ PAGERANK_TOLERANCE = 1e-8
 PAGERANK_MAX_ITER = 200
 PAGERANK_DAMPING_OVERRIDE = 1.0
 
+# Influence ranking (degree + PageRank + betweenness fusion)
+INFLUENCE_DEFAULT_WEIGHTS = {"degree": 0.34, "pagerank": 0.33, "betweenness": 0.33}
+# Past LARGE_GRAPH_THRESHOLD nodes, betweenness is estimated from a
+# deterministic seeded sample of this many pivot sources (Brandes is O(V*E)
+# exactly, which would not scale); the sample keeps results reproducible.
+BETWEENNESS_MAX_SOURCES = 256
+
 LOUVAIN_RESOLUTION = 1.0
 LOUVAIN_TOLERANCE = 1e-6
 LOUVAIN_MAX_ITER = 50
@@ -126,6 +133,11 @@ DEFAULT_SETTINGS = {
         "pagerankDamping": PAGERANK_DAMPING,
         "louvainResolution": LOUVAIN_RESOLUTION,
         "louvainTolerance": LOUVAIN_TOLERANCE,
+    },
+    "influence": {
+        "degreeWeight": INFLUENCE_DEFAULT_WEIGHTS["degree"],
+        "pagerankWeight": INFLUENCE_DEFAULT_WEIGHTS["pagerank"],
+        "betweennessWeight": INFLUENCE_DEFAULT_WEIGHTS["betweenness"],
     },
     "storage": {
         "shardCount": SHARD_COUNT,

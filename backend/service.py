@@ -71,6 +71,7 @@ class SocialGraphService:
         self._community_cache: Optional[dict] = None
         self._pagerank_cache: Optional[Dict[int, float]] = None
         self._rec_cache: Dict[int, dict] = self.derived.load_recommendations()
+        self._centrality_cache: Optional[dict] = None
         self._community_dirty = False
         self._pagerank_dirty = False
 
@@ -86,6 +87,7 @@ class SocialGraphService:
                 # Graph changed -> derived results are stale.
                 self._community_dirty = True
                 self._pagerank_dirty = True
+                self._centrality_cache = None
             return self._graph
 
     def invalidate_graph(self) -> None:
@@ -94,6 +96,7 @@ class SocialGraphService:
             self._graph_dirty = True
             self._community_dirty = False
             self._pagerank_dirty = True
+            self._centrality_cache = None
 
     def graph_stats(self) -> dict:
         graph = self.get_graph()
@@ -432,6 +435,94 @@ class SocialGraphService:
             "top": items,
             "computed_at": config.now_ms(),
             "damping": self.settings.get()["algorithm"]["pagerankDamping"],
+        }
+
+    # ------------------------------------------------------------------
+    # Influence ranking (degree + PageRank + betweenness fusion)
+    # ------------------------------------------------------------------
+    def _influence_base(self, refresh: bool = False) -> dict:
+        """Return the cached centrality maps, computing them if needed.
+
+        The three centralities are computed *independently* here and cached;
+        weight changes afterwards only re-run the O(n) fusion, so the
+        ranking updates instantly.
+        """
+        with self._lock:
+            if refresh or self._centrality_cache is None:
+                graph = self.get_graph()
+                max_sources = None
+                approximate = False
+                if graph.node_count > config.LARGE_GRAPH_THRESHOLD:
+                    max_sources = config.BETWEENNESS_MAX_SOURCES
+                    approximate = True
+                with config.Timed() as timer:
+                    degree_c = algorithms.degree_centrality(graph)
+                    pagerank_c = pagerank(graph)
+                    betweenness_c = algorithms.betweenness_centrality(
+                        graph, max_sources=max_sources
+                    )
+                self._centrality_cache = {
+                    "degree": degree_c,
+                    "pagerank": pagerank_c,
+                    "betweenness": betweenness_c,
+                    "approximate": approximate,
+                    "nodes": graph.node_count,
+                    "edges": graph.edge_count,
+                    "time_ms": round(timer.elapsed_ms, 2),
+                    "computed_at": config.now_ms(),
+                }
+            return self._centrality_cache
+
+    def compute_influence(
+        self,
+        weights: Optional[Dict[str, float]] = None,
+        top: Optional[int] = None,
+        save: bool = False,
+        refresh: bool = False,
+    ) -> dict:
+        """Fuse the three centralities into a ranked influence list.
+
+        ``weights`` may override the persisted influence settings; ``save``
+        writes them back so the configuration is reusable across sessions.
+        """
+        if weights is None:
+            s = self.settings.get().get("influence", {})
+            weights = {
+                "degree": s.get("degreeWeight"),
+                "pagerank": s.get("pagerankWeight"),
+                "betweenness": s.get("betweennessWeight"),
+            }
+        if save:
+            w_norm = algorithms.normalize_influence_weights(weights)
+            self.settings.update({
+                "influence": {
+                    "degreeWeight": w_norm["degree"],
+                    "pagerankWeight": w_norm["pagerank"],
+                    "betweennessWeight": w_norm["betweenness"],
+                }
+            })
+
+        base = self._influence_base(refresh=refresh)
+        items = algorithms.fuse_influence(
+            base["degree"], base["pagerank"], base["betweenness"], weights
+        )
+        w_used = algorithms.normalize_influence_weights(weights)
+
+        users = self.store.load_users()
+        out = items[:top] if top else items
+        for it in out:
+            it["name"] = users.get(it["id"], {}).get("name", str(it["id"]))
+        return {
+            "items": out,
+            "total": len(items),
+            "weights": {k: round(v, 6) for k, v in w_used.items()},
+            "meta": {
+                "nodes": base["nodes"],
+                "edges": base["edges"],
+                "approximate": base["approximate"],
+                "time_ms": base["time_ms"],
+                "computed_at": base["computed_at"],
+            },
         }
 
     # ------------------------------------------------------------------

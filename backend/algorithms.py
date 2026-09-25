@@ -6,6 +6,8 @@ Graph algorithms implemented for **memory-efficient, large-scale execution**.
 * ``bfs_shortest_path``          -- classic unweighted BFS with parent tracking
 * ``bidirectional_shortest_path`` -- meets-in-the-middle, much faster on big graphs
 * ``pagerank``                   -- power iteration over CSR with dangling-node fix
+* ``degree_centrality`` / ``betweenness_centrality`` / ``fuse_influence``
+                               -- centrality suite + weighted influence ranking
 * ``louvain``                    -- two-phase modularity optimisation w/ early stop
 * ``recommend_*``                -- collaborative filtering + embedding + cold start
   + diversity re-ranking (MMR)
@@ -300,6 +302,175 @@ def pagerank(
 
 def top_pagerank(ranks: Dict[int, float], k: int = 20) -> List[Tuple[int, float]]:
     return heapq.nlargest(k, ranks.items(), key=lambda kv: kv[1])
+
+
+# ===========================================================================
+# Centrality suite & influence fusion
+# ===========================================================================
+def degree_centrality(graph: Graph) -> Dict[int, float]:
+    """Normalised degree centrality ``deg(v) / (n - 1)`` for every node."""
+    n = graph.node_count
+    if n <= 1:
+        return {nid: 0.0 for nid in graph.nodes}
+    inv = 1.0 / (n - 1)
+    return {nid: graph.degree(nid) * inv for nid in graph.nodes}
+
+
+def betweenness_centrality(
+    graph: Graph,
+    max_sources: Optional[int] = None,
+    seed: int = config.LOUVAIN_RANDOM_SEED,
+) -> Dict[int, float]:
+    """Betweenness centrality via Brandes' algorithm (unweighted BFS passes).
+
+    Exact mode runs one BFS + dependency back-propagation per node, O(V*E)
+    overall with O(V) working memory (arrays are reused across sources and
+    only the visited slots are reset).  When ``max_sources`` is given and
+    smaller than ``n`` we switch to a deterministic seeded sample of pivot
+    sources and rescale -- the same exact-vs-approximate split used
+    elsewhere in this codebase, keeping large-graph runs reproducible.
+
+    Scores are normalised to ``[0, 1]`` with the standard undirected factor
+    ``2 / ((n - 1)(n - 2))`` so they are comparable to the other
+    centralities before fusion.
+    """
+    n = graph.node_count
+    scores = {nid: 0.0 for nid in graph.nodes}
+    if n <= 2:
+        return scores
+
+    id_of = graph.node_at_index
+    idx_of = graph.index_of
+
+    if max_sources is not None and 0 < max_sources < n:
+        rng = random.Random(seed)
+        sources = sorted(rng.sample(range(n), max_sources))
+        rescale = n / max_sources
+    else:
+        sources = range(n)
+        rescale = 1.0
+
+    # Reusable O(n) work arrays; only visited slots are touched per round.
+    dist = [-1] * n
+    sigma = [0.0] * n
+    delta = [0.0] * n
+    pred: List[List[int]] = [[] for _ in range(n)]
+    cb = [0.0] * n
+
+    for s in sources:
+        stack: List[int] = []
+        sigma[s] = 1.0
+        dist[s] = 0
+        queue = deque([s])
+        while queue:
+            v = queue.popleft()
+            stack.append(v)
+            dv1 = dist[v] + 1
+            for w_id in graph.neighbors(id_of(v)):
+                w = idx_of(w_id)
+                if dist[w] < 0:
+                    dist[w] = dv1
+                    queue.append(w)
+                if dist[w] == dv1:
+                    sigma[w] += sigma[v]
+                    pred[w].append(v)
+        # Back-propagate dependencies in reverse BFS order.
+        while stack:
+            w = stack.pop()
+            for v in pred[w]:
+                delta[v] += (sigma[v] / sigma[w]) * (1.0 + delta[w])
+            if w != s:
+                cb[w] += delta[w]
+            # Reset the touched slots for the next source.
+            dist[w] = -1
+            sigma[w] = 0.0
+            delta[w] = 0.0
+            pred[w].clear()
+
+    # Undirected graphs count every unordered pair twice -> halve; rescale
+    # the sampling estimate; normalise to [0, 1].
+    factor = rescale / 2.0
+    norm = 2.0 / ((n - 1) * (n - 2))
+    for i in range(n):
+        scores[id_of(i)] = cb[i] * factor * norm
+    return scores
+
+
+INFLUENCE_KEYS = ("degree", "pagerank", "betweenness")
+
+
+def normalize_influence_weights(
+    weights: Optional[Dict[str, float]] = None,
+) -> Dict[str, float]:
+    """Return the three influence weights renormalised to sum to 1.
+
+    Unknown/missing/negative entries fall back to the configured defaults;
+    an all-zero input degrades to equal weights so the fusion is always
+    well-defined.
+    """
+    w = dict(config.INFLUENCE_DEFAULT_WEIGHTS)
+    if weights:
+        for key in INFLUENCE_KEYS:
+            if key in weights:
+                try:
+                    w[key] = max(0.0, float(weights[key]))
+                except (TypeError, ValueError):
+                    pass
+    total = w["degree"] + w["pagerank"] + w["betweenness"]
+    if total <= 0:
+        return {key: 1.0 / 3.0 for key in INFLUENCE_KEYS}
+    return {key: w[key] / total for key in INFLUENCE_KEYS}
+
+
+def fuse_influence(
+    degree_c: Dict[int, float],
+    pagerank_c: Dict[int, float],
+    betweenness_c: Dict[int, float],
+    weights: Optional[Dict[str, float]] = None,
+) -> List[dict]:
+    """Weighted fusion of three independently computed centrality maps.
+
+    Consistent scaling (加权口径一致): every centrality map is max-normalised
+    to ``[0, 1]`` before fusion -- one unit of weight means the same thing
+    for each signal -- and the weights are renormalised to sum to 1, so the
+    composite score also lies in ``[0, 1]``.
+
+    Deterministic: sorted by ``(-score, id)`` so equal scores always resolve
+    to the same order and reruns reproduce identical rankings.
+    """
+    w = normalize_influence_weights(weights)
+
+    def _max_norm(scores: Dict[int, float]) -> Dict[int, float]:
+        peak = max(scores.values(), default=0.0)
+        if peak <= 0:
+            return {nid: 0.0 for nid in scores}
+        inv = 1.0 / peak
+        return {nid: v * inv for nid, v in scores.items()}
+
+    nd = _max_norm(degree_c)
+    npr = _max_norm(pagerank_c)
+    nb = _max_norm(betweenness_c)
+
+    scored = []
+    for nid in nd:
+        d = nd.get(nid, 0.0)
+        p = npr.get(nid, 0.0)
+        b = nb.get(nid, 0.0)
+        raw = w["degree"] * d + w["pagerank"] * p + w["betweenness"] * b
+        scored.append((nid, raw, d, p, b))
+    scored.sort(key=lambda t: (-t[1], t[0]))
+
+    items = []
+    for rank, (nid, raw, d, p, b) in enumerate(scored, 1):
+        items.append({
+            "id": nid,
+            "rank": rank,
+            "degree": round(d, 6),
+            "pagerank": round(p, 6),
+            "betweenness": round(b, 6),
+            "score": round(raw, 6),
+        })
+    return items
 
 
 # ===========================================================================

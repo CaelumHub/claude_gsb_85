@@ -54,10 +54,24 @@ def _check() -> int:
     lv = algorithms.louvain(g)
     assert lv["num_communities"] >= 2, lv  # cliques should separate
 
+    # Influence fusion: bridge nodes 3 and 4 dominate betweenness; the
+    # ranking must be deterministic across reruns.
+    dc = algorithms.degree_centrality(g)
+    bc = algorithms.betweenness_centrality(g)
+    assert abs(bc[3] - bc[4]) < 1e-9, bc
+    assert all(bc[x] <= bc[3] + 1e-9 for x in bc), bc
+    w = {"degree": 0.2, "pagerank": 0.3, "betweenness": 0.5}
+    inf1 = algorithms.fuse_influence(dc, pr, bc, w)
+    inf2 = algorithms.fuse_influence(dc, pr, bc, w)
+    assert len(inf1) == 6 and [i["id"] for i in inf1] == [i["id"] for i in inf2]
+    assert {inf1[0]["id"], inf1[1]["id"]} == {3, 4}, inf1[:2]
+    wn = algorithms.normalize_influence_weights({"degree": 2, "pagerank": 1, "betweenness": 1})
+    assert abs(sum(wn.values()) - 1.0) < 1e-9, wn
+
     rec = algorithms.hybrid_recommend(g, 1, k=3)
     assert "items" in rec
 
-    print("[check] OK: graph, bfs, pagerank, louvain, recommend all pass")
+    print("[check] OK: graph, bfs, pagerank, centrality/influence, louvain, recommend all pass")
     return 0
 
 

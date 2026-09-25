@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>影响力排名 · 社交网络图分析</title>
+  <link rel="stylesheet" href="css/style.css">
+  <style>
+    .w-row { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+    .w-row .w-name { width: 120px; flex: 0 0 auto; font-size: 13px; font-weight: 600; color: var(--text-muted); }
+    .w-row input[type="range"] { flex: 1; accent-color: var(--brand); }
+    .w-row .w-val { width: 58px; flex: 0 0 auto; text-align: right; font-family: var(--mono); font-size: 12.5px; }
+    .score-bar { display: flex; align-items: center; gap: 8px; min-width: 160px; }
+    .score-bar .bar-track { flex: 1; height: 14px; }
+    .score-bar .bar-val { width: 56px; }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <aside id="sidebar"></aside>
+    <main id="main">
+      <header id="topbar"></header>
+      <section id="content">
+        <div class="page-head">
+          <div>
+            <h1>影响力排名</h1>
+            <p class="desc">度数、PageRank、介数三类中心性独立计算后加权融合。拖动权重即时重排，权重可保存复用。</p>
+          </div>
+          <div class="actions">
+            <select class="select" id="topSel" style="max-width:130px">
+              <option value="20">Top 20</option>
+              <option value="50" selected>Top 50</option>
+              <option value="100">Top 100</option>
+              <option value="0">全部节点</option>
+            </select>
+            <button class="btn" id="btnRecompute">重算中心性</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">权重配置</div>
+          <div class="card-body">
+            <div class="w-row">
+              <span class="w-name">度数中心性</span>
+              <input type="range" id="wDegree" min="0" max="100" step="1" value="34">
+              <span class="w-val" id="wDegreeVal">—</span>
+            </div>
+            <div class="w-row">
+              <span class="w-name">PageRank 中心性</span>
+              <input type="range" id="wPagerank" min="0" max="100" step="1" value="33">
+              <span class="w-val" id="wPagerankVal">—</span>
+            </div>
+            <div class="w-row">
+              <span class="w-name">介数中心性</span>
+              <input type="range" id="wBetweenness" min="0" max="100" step="1" value="33">
+              <span class="w-val" id="wBetweennessVal">—</span>
+            </div>
+            <div class="row spread mt-8">
+              <span class="faint small">各分项按最大值归一到 [0,1] 后加权（权重自动归一，合计 <strong id="wSum">100%</strong>），综合得分 ∈ [0,1]。</span>
+              <span class="row">
+                <button class="btn btn-ghost btn-sm" id="btnDefault">恢复默认</button>
+                <button class="btn btn-primary btn-sm" id="btnSave">保存为默认权重</button>
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid cols-4 mt-16" id="tiles"></div>
+
+        <div class="card mt-16">
+          <div class="card-title">影响力排行榜 <span class="faint small" id="rankMeta"></span></div>
+          <div id="ranking" class="card-body" style="padding:0"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="js/api.js"></script>
+  <script src="js/common.js"></script>
+  <script>
+    const C = common;
+    const DEFAULT_W = { degree: 34, pagerank: 33, betweenness: 33 };
+    let debounceTimer = null;
+
+    // --------------------------------------------------------------
+    // 权重读取 / 归一化显示
+    // --------------------------------------------------------------
+    function readWeights() {
+      return {
+        degree: +document.getElementById("wDegree").value,
+        pagerank: +document.getElementById("wPagerank").value,
+        betweenness: +document.getElementById("wBetweenness").value,
+      };
+    }
+
+    function setWeights(w) {
+      document.getElementById("wDegree").value = Math.round(w.degree);
+      document.getElementById("wPagerank").value = Math.round(w.pagerank);
+      document.getElementById("wBetweenness").value = Math.round(w.betweenness);
+      syncWeightLabels();
+    }
+
+    function syncWeightLabels() {
+      const w = readWeights();
+      const sum = w.degree + w.pagerank + w.betweenness;
+      const norm = sum > 0
+        ? { degree: w.degree / sum, pagerank: w.pagerank / sum, betweenness: w.betweenness / sum }
+        : { degree: 1 / 3, pagerank: 1 / 3, betweenness: 1 / 3 };
+      document.getElementById("wDegreeVal").textContent = (norm.degree * 100).toFixed(1) + "%";
+      document.getElementById("wPagerankVal").textContent = (norm.pagerank * 100).toFixed(1) + "%";
+      document.getElementById("wBetweennessVal").textContent = (norm.betweenness * 100).toFixed(1) + "%";
+      document.getElementById("wSum").textContent = "100%";
+    }
+
+    // --------------------------------------------------------------
+    // 渲染
+    // --------------------------------------------------------------
+    function renderTiles(d) {
+      const m = d.meta || {};
+      const tiles = [
+        { label: "节点数", value: C.fmt(m.nodes), hint: "参与排名节点" },
+        { label: "边数", value: C.fmt(m.edges), hint: "好友关系" },
+        { label: "中心性耗时", value: m.time_ms != null ? C.fmtMs(m.time_ms) : "—", hint: "三类独立计算总耗时" },
+        { label: "介数口径", value: m.approximate ? "抽样近似" : "精确", hint: m.approximate ? "大图固定种子抽样" : "Brandes 全量" },
+      ];
+      document.getElementById("tiles").innerHTML = tiles.map((t) =>
+        '<div class="card stat-tile"><div class="label">' + t.label + '</div><div class="value">' + t.value + '</div><div class="hint">' + t.hint + "</div></div>"
+      ).join("");
+    }
+
+    function scoreCell(v) {
+      const pct = (v * 100).toFixed(1);
+      return '<div class="score-bar"><span class="bar-track"><span class="bar-fill" style="width:' + pct + '%"></span></span>' +
+             '<span class="bar-val">' + v.toFixed(4) + "</span></div>";
+    }
+
+    function renderRanking(d) {
+      const items = d.items || [];
+      document.getElementById("rankMeta").textContent =
+        "共 " + C.fmt(d.total) + " 节点 · 权重 度数 " + (d.weights.degree * 100).toFixed(1) +
+        "% / PageRank " + (d.weights.pagerank * 100).toFixed(1) +
+        "% / 介数 " + (d.weights.betweenness * 100).toFixed(1) + "%";
+      const box = document.getElementById("ranking");
+      if (!items.length) { box.innerHTML = C.emptyState("★", "暂无数据，请先导入关系或生成演示数据"); return; }
+      C.renderTable(box, [
+        { key: "rank", label: "排名", align: "center", render: (r) => {
+            const medal = r.rank === 1 ? "🥇" : r.rank === 2 ? "🥈" : r.rank === 3 ? "🥉" : "";
+            return (medal ? medal + " " : "") + "<strong>" + r.rank + "</strong>";
+          } },
+        { key: "name", label: "用户", render: (r) =>
+            "<strong>" + C.escapeHtml(r.name) + '</strong> <span class="faint small">#' + r.id + "</span>" },
+        { key: "degree", label: "度数得分", align: "right", render: (r) => r.degree.toFixed(4) },
+        { key: "pagerank", label: "PageRank 得分", align: "right", render: (r) => r.pagerank.toFixed(4) },
+        { key: "betweenness", label: "介数得分", align: "right", render: (r) => r.betweenness.toFixed(4) },
+        { key: "score", label: "综合得分", render: (r) => scoreCell(r.score) },
+      ], items);
+    }
+
+    // --------------------------------------------------------------
+    // 数据流：改权重 -> 防抖 -> 立即重新融合（中心性缓存命中，毫秒级）
+    // --------------------------------------------------------------
+    function currentTop() {
+      const v = +document.getElementById("topSel").value;
+      return v > 0 ? v : 0;
+    }
+
+    function recompute(opts) {
+      opts = opts || {};
+      const w = readWeights();
+      const body = {
+        weights: { degree: w.degree / 100, pagerank: w.pagerank / 100, betweenness: w.betweenness / 100 },
+        top: currentTop(),
+        save: !!opts.save,
+        refresh: !!opts.refresh,
+      };
+      return api.computeInfluence(body).then((d) => {
+        renderTiles(d);
+        renderRanking(d);
+        if (opts.save) C.toast("权重已保存为默认配置", "success");
+        if (opts.refresh) C.toast("中心性已重算，排名已更新", "success");
+      }).catch((e) => C.toast(e.message, "error"));
+    }
+
+    function scheduleRecompute() {
+      syncWeightLabels();
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => recompute(), 250);
+    }
+
+    function load() {
+      api.influence({ top: currentTop() }).then((d) => {
+        // 用后端生效的（归一化）权重初始化滑块，保证口径一致。
+        setWeights({
+          degree: d.weights.degree * 100,
+          pagerank: d.weights.pagerank * 100,
+          betweenness: d.weights.betweenness * 100,
+        });
+        renderTiles(d);
+        renderRanking(d);
+      }).catch((e) => C.toast(e.message, "error"));
+    }
+
+    C.initPage("influence", function () {
+      ["wDegree", "wPagerank", "wBetweenness"].forEach((id) => {
+        document.getElementById(id).addEventListener("input", scheduleRecompute);
+      });
+      document.getElementById("topSel").addEventListener("change", () => recompute());
+      document.getElementById("btnSave").addEventListener("click", () => recompute({ save: true }));
+      document.getElementById("btnRecompute").addEventListener("click", () => recompute({ refresh: true }));
+      document.getElementById("btnDefault").addEventListener("click", () => {
+        setWeights(DEFAULT_W);
+        recompute();
+      });
+      syncWeightLabels();
+      load();
+    });
+  </script>
+</body>
+</html>

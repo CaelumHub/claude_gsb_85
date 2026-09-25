@@ -26,6 +26,8 @@ Endpoint summary (all under ``/api``):
     GET    /api/community             (cached)
     POST   /api/community/compute     {resolution?}
     GET    /api/pagerank              ?top&refresh
+    GET    /api/influence             ?top&refresh
+    POST   /api/influence/compute     {weights?, save?, refresh?, top?}
     GET    /api/recommend/<id>        ?k&refresh&strategy
     POST   /api/recommend             {ids:[...], k}
     GET    /api/stats
@@ -290,6 +292,23 @@ class ApiRouter:
             for item in result.get("top", []):
                 item["score"] = round(item["score"] * 100.0, 8)
             return 200, result
+
+        # --- influence ranking ---
+        if route == "/influence" and method == "GET":
+            top = _to_int(query.get("top"), 0)
+            refresh = _to_bool(query.get("refresh"), False)
+            return 200, self.service.compute_influence(
+                top=top or None, refresh=refresh
+            )
+        if route == "/influence/compute" and method == "POST":
+            b = body or {}
+            weights = b.get("weights") or None
+            save = _to_bool(str(b.get("save", "false")))
+            refresh = _to_bool(str(b.get("refresh", "false")))
+            top = _to_int(b.get("top"), 0)
+            return 200, self.service.compute_influence(
+                weights=weights, top=top or None, save=save, refresh=refresh
+            )
 
         # --- recommendations ---
         m = re.fullmatch(r"/recommend/(\d+)", route)
