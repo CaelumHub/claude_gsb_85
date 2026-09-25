@@ -82,6 +82,10 @@
     computeCommunity: (resolution) => request("POST", "/api/community/compute", { resolution }),
     pagerank: (p) => request("GET", "/api/pagerank" + qs(p)),
 
+    // 影响力排名（加权中心性融合）
+    influence: (p) => request("GET", "/api/influence" + qs(p)),
+    computeInfluence: (b) => request("POST", "/api/influence/compute", b),
+
     // 推荐
     recommend: (id, p) => request("GET", "/api/recommend/" + id + qs(p)),
     recommendMany: (ids, k) => request("POST", "/api/recommend", { ids, k }),

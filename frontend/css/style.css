@@ -377,6 +377,29 @@ table.table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 }
 .hop.arrow { background: none; color: var(--text-faint); padding: 5px 2px; }
 
+/* 影响力排名：权重滑块与得分条 */
+.weight-row { display: flex; align-items: center; gap: 12px; margin: 12px 0; }
+.weight-row .w-label { width: 104px; flex: 0 0 auto; font-size: 13px; font-weight: 600; color: var(--text-muted); }
+.weight-row input[type="range"] { flex: 1; accent-color: var(--brand); cursor: pointer; }
+.weight-row .w-num { width: 74px; flex: 0 0 auto; }
+.weight-row .w-pct {
+  width: 56px; flex: 0 0 auto; text-align: right;
+  font-family: var(--mono); font-size: 12.5px; color: var(--text-muted);
+}
+.rank-badge {
+  display: inline-grid; place-items: center; min-width: 26px; height: 22px;
+  padding: 0 6px; border-radius: 6px; font-weight: 700; font-size: 12px;
+  background: var(--bg-inset); color: var(--text-muted);
+}
+.rank-badge.top { background: var(--warning-soft); color: var(--warning); }
+.score-cell { display: flex; align-items: center; gap: 8px; }
+.score-cell .mini-track {
+  width: 90px; height: 8px; flex: 0 0 auto;
+  background: var(--bg-inset); border-radius: 4px; overflow: hidden;
+}
+.score-cell .mini-fill { height: 100%; border-radius: 4px; background: var(--brand); transition: width 0.3s ease; }
+.score-cell .score-num { font-family: var(--mono); font-weight: 700; }
+
 /* 推荐项卡片 */
 .rec-item {
   display: flex; align-items: center; gap: 14px; padding: 13px 16px;

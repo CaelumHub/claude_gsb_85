@@ -40,6 +40,7 @@ TAGS_FILE = os.path.join(DATA_DIR, "tags.json")
 RECOMMENDATIONS_FILE = os.path.join(DATA_DIR, "recommendations.json")
 COMMUNITY_FILE = os.path.join(DATA_DIR, "community.json")
 PAGERANK_FILE = os.path.join(DATA_DIR, "pagerank.json")
+INFLUENCE_FILE = os.path.join(DATA_DIR, "influence.json")
 INDEX_FILE = os.path.join(DATA_DIR, "index.json")
 SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
 IMPORT_LOG_FILE = os.path.join(DATA_DIR, "import_log.jsonl")
@@ -126,6 +127,14 @@ DEFAULT_SETTINGS = {
         "pagerankDamping": PAGERANK_DAMPING,
         "louvainResolution": LOUVAIN_RESOLUTION,
         "louvainTolerance": LOUVAIN_TOLERANCE,
+    },
+    "influence": {
+        # Weights for the influence ranking; re-normalised to sum to 1 on use,
+        # so any non-negative triple is a valid configuration.
+        "degreeWeight": 1.0 / 3.0,
+        "pagerankWeight": 1.0 / 3.0,
+        "betweennessWeight": 1.0 / 3.0,
+        "topK": 50,
     },
     "storage": {
         "shardCount": SHARD_COUNT,

@@ -57,7 +57,26 @@ def _check() -> int:
     rec = algorithms.hybrid_recommend(g, 1, k=3)
     assert "items" in rec
 
-    print("[check] OK: graph, bfs, pagerank, louvain, recommend all pass")
+    # Centrality suite + weighted influence fusion.
+    bc = algorithms.betweenness_centrality(g)
+    assert max(bc, key=bc.get) in (3, 4), bc  # bridge nodes carry the flow
+    dc = algorithms.degree_centrality(g)
+    assert all(0.0 <= v <= 1.0 for v in dc.values())
+
+    weights = {"degree": 2.0, "pagerank": 1.0, "betweenness": 1.0}
+    inf = algorithms.influence_scores(g, weights)
+    assert abs(sum(inf["weights"].values()) - 1.0) < 1e-9, inf["weights"]
+    scores = [it["score"] for it in inf["items"]]
+    assert scores == sorted(scores, reverse=True)
+    assert [it["rank"] for it in inf["items"]] == list(range(1, len(scores) + 1))
+    # Reproducible: identical inputs -> identical ranking.
+    again = algorithms.influence_scores(g, weights)
+    assert [it["id"] for it in inf["items"]] == [it["id"] for it in again["items"]]
+    # Degree-only weights -> the top node must be a max-degree node.
+    inf_deg = algorithms.influence_scores(g, {"degree": 1.0})
+    assert inf_deg["items"][0]["degree_norm"] == 1.0
+
+    print("[check] OK: graph, bfs, pagerank, louvain, recommend, influence all pass")
     return 0
 
 

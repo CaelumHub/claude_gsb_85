@@ -1,10 +1,10 @@
 # 社交网络图分析与推荐系统
 
 一个 **零第三方依赖**（Python 后端纯标准库，前端仅引 vis.js CDN）的社交网络图分析
-与推荐系统。前端 10 个页面覆盖用户管理、关系导入、图可视化、路径与共同好友、
-社群发现、个性化推荐、统计面板、系统设置、数据导出与标签管理；后端实现邻接表图
-构建、BFS 最短路径、PageRank、Louvain 社群划分，以及协同过滤 + 图嵌入 + 标签的
-混合推荐。
+与推荐系统。前端 11 个页面覆盖用户管理、关系导入、图可视化、路径与共同好友、
+社群发现、影响力排名、个性化推荐、统计面板、系统设置、数据导出与标签管理；后端
+实现邻接表图构建、BFS 最短路径、PageRank、介数中心性加权融合、Louvain 社群划分，
+以及协同过滤 + 图嵌入 + 标签的混合推荐。
 
 ---
 
@@ -57,11 +57,12 @@ gsb3/
 │   ├── graph.html              # 3. 图可视化（vis.js 缩放拖拽、路径高亮）
 │   ├── path.html               # 4. 最短路径与共同好友查询
 │   ├── community.html          # 5. 社群发现（Louvain 着色）
-│   ├── recommend.html          # 6. 个性化推荐列表
-│   ├── stats.html              # 7. 统计面板
-│   ├── settings.html           # 8. 系统设置
-│   ├── export.html             # 9. 数据导出
-│   ├── tags.html               # 10. 标签管理
+│   ├── influence.html          # 6. 影响力排名（度数/PageRank/介数加权融合）
+│   ├── recommend.html          # 7. 个性化推荐列表
+│   ├── stats.html              # 8. 统计面板
+│   ├── settings.html           # 9. 系统设置
+│   ├── export.html             # 10. 数据导出
+│   ├── tags.html               # 11. 标签管理
 │   ├── css/style.css           # 设计系统（明暗双主题）
 │   └── js/                     # api.js（客户端）+ common.js（外壳/工具）
 └── data/                       # 运行期生成（分片图、画像、推荐、社群…）
@@ -72,6 +73,7 @@ gsb3/
     ├── recommendations.json    # 推荐结果（单独存储）
     ├── community.json          # Louvain 结果缓存
     ├── pagerank.json           # PageRank 结果缓存
+    ├── influence.json          # 影响力排名结果缓存（含权重快照）
     ├── index.json              # 用户 → 分片 索引
     └── settings.json           # 系统设置
 ```
@@ -104,6 +106,8 @@ gsb3/
 | --- | --- |
 | 最短路径 | 经典 BFS + **双向 BFS**（大图自动切换，搜索面 O(b^(d/2))） |
 | PageRank | 幂迭代，显式处理 dangling 节点，O(n) 内存，L1 收敛判定 |
+| 介数中心性 | Brandes 算法（逐源 BFS + 依赖回传），O(V·E)，遍历顺序确定、结果可复现 |
+| 影响力融合 | 度数 / PageRank / 介数独立计算并各自 min-max 归一化，按归一化权重线性加权；`(-score, id)` 稳定排序 |
 | Louvain | 两阶段模块度优化：局部移动（ΔQ 增量公式）+ 聚合，迭代至收敛，固定种子可复现，`min_improvement` 早停 |
 | 协同过滤 | 朋友的朋友 + Adamic-Adar 权重去偏，仅依赖邻域规模 |
 | 图嵌入 | 距离-地标（landmark）定位嵌入：L 次有界 BFS 得到低维向量，捕捉结构相似性，无需神经网络训练 |
@@ -133,6 +137,7 @@ gsb3/
 | GET | `/api/path` · `/api/common-friends` | 最短路径 / 共同好友 |
 | GET/POST | `/api/community` · `/api/community/compute` | Louvain 结果 / 重算 |
 | GET | `/api/pagerank?top=` | PageRank 中心性 |
+| GET/POST | `/api/influence` · `/api/influence/compute` | 影响力排名（权重可调、可保存复用） |
 | GET/POST | `/api/recommend/<id>` · `/api/recommend` | 单用户 / 批量推荐 |
 | GET | `/api/stats` | 统计面板聚合 |
 | GET/PUT | `/api/settings` | 读取 / 保存设置 |

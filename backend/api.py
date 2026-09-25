@@ -26,6 +26,8 @@ Endpoint summary (all under ``/api``):
     GET    /api/community             (cached)
     POST   /api/community/compute     {resolution?}
     GET    /api/pagerank              ?top&refresh
+    GET    /api/influence             ?top&refresh
+    POST   /api/influence/compute     {weights?, top?, saveWeights?}
     GET    /api/recommend/<id>        ?k&refresh&strategy
     POST   /api/recommend             {ids:[...], k}
     GET    /api/stats
@@ -290,6 +292,23 @@ class ApiRouter:
             for item in result.get("top", []):
                 item["score"] = round(item["score"] * 100.0, 8)
             return 200, result
+
+        # --- influence ranking (weighted centrality fusion) ---
+        if route == "/influence" and method == "GET":
+            top = _to_int(query.get("top"), 0) or None
+            refresh = _to_bool(query.get("refresh"), False)
+            return 200, self.service.compute_influence(top=top, refresh=refresh)
+        if route == "/influence/compute" and method == "POST":
+            b = body or {}
+            weights = b.get("weights")
+            if weights is not None and not isinstance(weights, dict):
+                return _error("weights 必须是对象，如 {\"degree\": 0.4, ...}")
+            top = _to_int(b.get("top"), 0) or None
+            raw_save = b.get("saveWeights")
+            save_weights = raw_save if isinstance(raw_save, bool) else _to_bool(str(raw_save), False)
+            return 200, self.service.compute_influence(
+                weights=weights, top=top, save_weights=save_weights
+            )
 
         # --- recommendations ---
         m = re.fullmatch(r"/recommend/(\d+)", route)

@@ -73,6 +73,11 @@ class SocialGraphService:
         self._rec_cache: Dict[int, dict] = self.derived.load_recommendations()
         self._community_dirty = False
         self._pagerank_dirty = False
+        # Raw centrality maps (degree / pagerank / betweenness) for the
+        # influence ranking.  Cached together because they only depend on the
+        # graph topology -- changing the fusion *weights* never requires a
+        # recompute, so weight edits re-rank instantly.
+        self._centrality_cache: Optional[Dict[str, Dict[int, float]]] = None
 
     # ------------------------------------------------------------------
     # Graph access / caching
@@ -86,6 +91,7 @@ class SocialGraphService:
                 # Graph changed -> derived results are stale.
                 self._community_dirty = True
                 self._pagerank_dirty = True
+                self._centrality_cache = None
             return self._graph
 
     def invalidate_graph(self) -> None:
@@ -94,6 +100,7 @@ class SocialGraphService:
             self._graph_dirty = True
             self._community_dirty = False
             self._pagerank_dirty = True
+            self._centrality_cache = None
 
     def graph_stats(self) -> dict:
         graph = self.get_graph()
@@ -435,6 +442,106 @@ class SocialGraphService:
         }
 
     # ------------------------------------------------------------------
+    # Influence ranking (degree + PageRank + betweenness, weighted fusion)
+    # ------------------------------------------------------------------
+    def compute_influence(
+        self,
+        weights: Optional[Dict[str, float]] = None,
+        top: Optional[int] = None,
+        refresh: bool = False,
+        save_weights: bool = False,
+    ) -> dict:
+        """Rank nodes by a weighted fusion of the three centralities.
+
+        The centralities are computed independently and cached as raw maps;
+        the weight blend itself is a cheap normalise-and-sum pass, so editing
+        the weights re-ranks the whole graph instantly.  ``save_weights``
+        persists the (normalised) weights into the settings store so the
+        configuration is reusable across sessions and by ``GET /api/influence``.
+        """
+        settings = self.settings.get()
+        stored = settings.get("influence", {})
+        if weights is None:
+            weights = {
+                "degree": stored.get("degreeWeight", 1.0),
+                "pagerank": stored.get("pagerankWeight", 1.0),
+                "betweenness": stored.get("betweennessWeight", 1.0),
+            }
+        norm_weights = algorithms.normalise_weights(weights)
+        if save_weights:
+            self.settings.update(
+                {
+                    "influence": {
+                        "degreeWeight": norm_weights["degree"],
+                        "pagerankWeight": norm_weights["pagerank"],
+                        "betweennessWeight": norm_weights["betweenness"],
+                    }
+                }
+            )
+
+        graph = self.get_graph()
+        with self._lock:
+            centrality = None if refresh else self._centrality_cache
+        centrality_ms = 0.0
+        if centrality is None:
+            damping = settings.get("algorithm", {}).get(
+                "pagerankDamping", config.PAGERANK_DAMPING
+            )
+            with config.Timed() as timer:
+                centrality = {
+                    "degree": algorithms.degree_centrality(graph),
+                    "pagerank": algorithms.pagerank(graph, damping=damping),
+                    "betweenness": algorithms.betweenness_centrality(graph),
+                }
+            centrality_ms = timer.elapsed_ms
+            with self._lock:
+                self._centrality_cache = centrality
+
+        with config.Timed() as timer:
+            fused = algorithms.influence_scores(
+                graph,
+                weights,
+                degree=centrality["degree"],
+                pagerank_ranks=centrality["pagerank"],
+                betweenness=centrality["betweenness"],
+            )
+        blend_ms = timer.elapsed_ms
+
+        if top is None:
+            top = _safe_int(stored.get("topK"), 50)
+        top = max(1, min(top, max(graph.node_count, 1)))
+
+        users = self.store.load_users()
+        items = []
+        for it in fused["items"][:top]:
+            items.append(
+                {
+                    "rank": it["rank"],
+                    "id": it["id"],
+                    "name": users.get(it["id"], {}).get("name", str(it["id"])),
+                    "degree_centrality": round(it["degree_centrality"], 6),
+                    "pagerank": round(it["pagerank"], 8),
+                    "betweenness": round(it["betweenness"], 6),
+                    "degree_norm": round(it["degree_norm"], 6),
+                    "pagerank_norm": round(it["pagerank_norm"], 6),
+                    "betweenness_norm": round(it["betweenness_norm"], 6),
+                    "score": round(it["score"], 6),
+                }
+            )
+
+        result = {
+            "weights": {k: round(v, 6) for k, v in fused["weights"].items()},
+            "items": items,
+            "total": len(fused["items"]),
+            "top": top,
+            "centrality_ms": round(centrality_ms, 2),
+            "blend_ms": round(blend_ms, 2),
+            "computed_at": config.now_ms(),
+        }
+        self.derived.save_influence(result)
+        return result
+
+    # ------------------------------------------------------------------
     # Recommendations
     # ------------------------------------------------------------------
     def recommend(self, uid: int, k: Optional[int] = None, refresh: bool = False, strategy: Optional[str] = None) -> dict:
@@ -570,6 +677,13 @@ class SocialGraphService:
             "profiles": len(profiles),
             "shards": self.store.shard_usage(),
         }
+
+
+def _safe_int(value, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _count_components(graph: Graph) -> int:

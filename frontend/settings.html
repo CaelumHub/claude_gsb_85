@@ -88,6 +88,18 @@
                   <label class="field">Louvain 收敛容差</label>
                   <input class="input" id="algorithm.louvainTolerance" type="number" step="0.0000001" min="0">
                 </div>
+                <div class="field-group">
+                  <label class="field">影响力 · 度数权重</label>
+                  <input class="input" id="influence.degreeWeight" type="number" step="0.01" min="0" max="1">
+                </div>
+                <div class="field-group">
+                  <label class="field">影响力 · PageRank 权重</label>
+                  <input class="input" id="influence.pagerankWeight" type="number" step="0.01" min="0" max="1">
+                </div>
+                <div class="field-group">
+                  <label class="field">影响力 · 介数权重</label>
+                  <input class="input" id="influence.betweennessWeight" type="number" step="0.01" min="0" max="1">
+                </div>
               </div>
             </div>
 
@@ -129,6 +141,9 @@
       "algorithm.pagerankDamping": "number",
       "algorithm.louvainResolution": "number",
       "algorithm.louvainTolerance": "number",
+      "influence.degreeWeight": "number",
+      "influence.pagerankWeight": "number",
+      "influence.betweennessWeight": "number",
       "storage.shardCount": "number",
       "storage.autoFlush": "checkbox",
       "system.name": "text",

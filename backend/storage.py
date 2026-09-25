@@ -444,6 +444,12 @@ class DerivedStore:
             config.PAGERANK_FILE, {"ranks": {str(k): v for k, v in ranks.items()}}
         )
 
+    def load_influence(self) -> dict:
+        return config.read_json(config.INFLUENCE_FILE, {})
+
+    def save_influence(self, result: dict) -> None:
+        config.atomic_write_json(config.INFLUENCE_FILE, result)
+
 
 def log_import(entry: dict) -> None:
     """Append a one-line JSON record to the import log (append-only, cheap)."""

@@ -6,6 +6,8 @@ Graph algorithms implemented for **memory-efficient, large-scale execution**.
 * ``bfs_shortest_path``          -- classic unweighted BFS with parent tracking
 * ``bidirectional_shortest_path`` -- meets-in-the-middle, much faster on big graphs
 * ``pagerank``                   -- power iteration over CSR with dangling-node fix
+* ``degree_centrality`` / ``betweenness_centrality`` / ``influence_scores``
+                                 -- centrality suite + weighted influence fusion
 * ``louvain``                    -- two-phase modularity optimisation w/ early stop
 * ``recommend_*``                -- collaborative filtering + embedding + cold start
   + diversity re-ranking (MMR)
@@ -300,6 +302,163 @@ def pagerank(
 
 def top_pagerank(ranks: Dict[int, float], k: int = 20) -> List[Tuple[int, float]]:
     return heapq.nlargest(k, ranks.items(), key=lambda kv: kv[1])
+
+
+# ===========================================================================
+# Centrality suite & weighted influence fusion
+# ===========================================================================
+#: Metric keys understood by the influence fusion, in canonical order.
+INFLUENCE_METRICS = ("degree", "pagerank", "betweenness")
+
+
+def degree_centrality(graph: Graph) -> Dict[int, float]:
+    """Normalised degree centrality: ``deg(v) / (n - 1)``, in ``[0, 1]``."""
+    n = graph.node_count
+    if n <= 1:
+        return {nid: 0.0 for nid in graph.nodes}
+    denom = float(n - 1)
+    return {nid: graph.degree(nid) / denom for nid in graph.nodes}
+
+
+def betweenness_centrality(graph: Graph, normalized: bool = True) -> Dict[int, float]:
+    """Brandes' algorithm for unweighted betweenness centrality.
+
+    One BFS per source node: O(V * E) time, O(V + E) memory, no dense matrix.
+    Neighbour lists of a frozen graph are sorted by id, so the traversal order
+    -- and therefore the result -- is fully deterministic and reproducible.
+    With ``normalized`` the score is divided by the number of node pairs, so
+    the result lies in ``[0, 1]`` (standard normalisation for undirected
+    graphs: ``2 / ((n - 1) * (n - 2))``).
+    """
+    nodes = graph.nodes
+    n = len(nodes)
+    cb = {nid: 0.0 for nid in nodes}
+    if n <= 2:
+        return cb
+
+    for s in nodes:
+        # Single-source shortest paths via BFS; count them (sigma) and record
+        # predecessors so dependencies can be accumulated on the way back.
+        stack: List[int] = []
+        pred: Dict[int, List[int]] = {s: []}
+        sigma: Dict[int, float] = {s: 1.0}
+        dist: Dict[int, int] = {s: 0}
+        queue = deque([s])
+        while queue:
+            v = queue.popleft()
+            stack.append(v)
+            dv1 = dist[v] + 1
+            for w in graph.neighbors(v):
+                if w not in dist:
+                    dist[w] = dv1
+                    queue.append(w)
+                if dist[w] == dv1:
+                    sigma[w] = sigma.get(w, 0.0) + sigma[v]
+                    pred.setdefault(w, []).append(v)
+
+        # Back-propagation of pair dependencies (reverse BFS order).
+        delta: Dict[int, float] = {nid: 0.0 for nid in stack}
+        while stack:
+            w = stack.pop()
+            coeff = (1.0 + delta[w]) / sigma[w]
+            for v in pred.get(w, []):
+                delta[v] += sigma[v] * coeff
+            if w != s:
+                cb[w] += delta[w]
+
+    # Undirected graph: every unordered pair was counted twice (once per
+    # endpoint), so halve; normalisation then scales into [0, 1].
+    if normalized and n > 2:
+        scale = 1.0 / ((n - 1) * (n - 2))
+        for nid in cb:
+            cb[nid] *= scale
+    else:
+        for nid in cb:
+            cb[nid] /= 2.0
+    return cb
+
+
+def normalise_weights(weights: Optional[Dict[str, float]]) -> Dict[str, float]:
+    """Coerce user-supplied weights into a normalised triple summing to 1.
+
+    Negative / non-numeric entries are clamped to 0; an all-zero (or missing)
+    input falls back to equal weights so the fusion is always well-defined.
+    """
+    weights = weights or {}
+    raw: Dict[str, float] = {}
+    for key in INFLUENCE_METRICS:
+        try:
+            raw[key] = max(0.0, float(weights.get(key, 0.0)))
+        except (TypeError, ValueError):
+            raw[key] = 0.0
+    total = sum(raw.values())
+    if total <= 0:
+        return {key: 1.0 / len(INFLUENCE_METRICS) for key in INFLUENCE_METRICS}
+    return {key: raw[key] / total for key in INFLUENCE_METRICS}
+
+
+def _min_max_normalise(values: Dict[int, float]) -> Dict[int, float]:
+    """Min-max normalise a score map into ``[0, 1]`` (constant maps -> 0)."""
+    if not values:
+        return {}
+    lo = min(values.values())
+    hi = max(values.values())
+    span = hi - lo
+    if span <= 0:
+        return {nid: 0.0 for nid in values}
+    return {nid: (v - lo) / span for nid, v in values.items()}
+
+
+def influence_scores(
+    graph: Graph,
+    weights: Optional[Dict[str, float]] = None,
+    degree: Optional[Dict[int, float]] = None,
+    pagerank_ranks: Optional[Dict[int, float]] = None,
+    betweenness: Optional[Dict[int, float]] = None,
+    damping: float = config.PAGERANK_DAMPING,
+) -> Dict[str, object]:
+    """Fuse degree / PageRank / betweenness centrality into an influence score.
+
+    The three centralities are computed **independently** first (or supplied
+    pre-computed so callers can cache them), each min-max normalised to
+    ``[0, 1]`` so they share a common scale, then blended with the normalised
+    weights: ``score(v) = sum_k w_k * norm_k(v)``.  Items are ordered by
+    ``(-score, node id)`` which makes the ranking stable and reproducible.
+    """
+    w = normalise_weights(weights)
+    if degree is None:
+        degree = degree_centrality(graph)
+    if pagerank_ranks is None:
+        pagerank_ranks = pagerank(graph, damping=damping)
+    if betweenness is None:
+        betweenness = betweenness_centrality(graph)
+
+    norms = {
+        "degree": _min_max_normalise(degree),
+        "pagerank": _min_max_normalise(pagerank_ranks),
+        "betweenness": _min_max_normalise(betweenness),
+    }
+
+    items: List[dict] = []
+    for nid in graph.nodes:
+        parts = {key: norms[key].get(nid, 0.0) for key in INFLUENCE_METRICS}
+        score = sum(w[key] * parts[key] for key in INFLUENCE_METRICS)
+        items.append(
+            {
+                "id": nid,
+                "degree_centrality": degree.get(nid, 0.0),
+                "pagerank": pagerank_ranks.get(nid, 0.0),
+                "betweenness": betweenness.get(nid, 0.0),
+                "degree_norm": parts["degree"],
+                "pagerank_norm": parts["pagerank"],
+                "betweenness_norm": parts["betweenness"],
+                "score": score,
+            }
+        )
+    items.sort(key=lambda it: (-it["score"], it["id"]))
+    for rank, it in enumerate(items, 1):
+        it["rank"] = rank
+    return {"weights": w, "items": items}
 
 
 # ===========================================================================
